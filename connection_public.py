@@ -2,6 +2,8 @@ from ultralytics import YOLO
 import cv2
 import requests
 import time
+import os
+
 from datetime import datetime
 
 
@@ -48,18 +50,38 @@ def send_telegram_message(text): #메세지 보내는 함수
         "chat_id": CHAT_ID, #받을 사람
         "text": text #보낼 메세지 내용
     }
-    requests.post(url, data=data) #텔레그램에 메세지 전송
+    try:
+        response = requests.post(url, data=data, timeout=10)
+        response.raise_for_status()
+        return True
+    except requests.RequestException as e:
+        print("텔레그램 전송 실패:", e)
+        return False
 
 
 def send_telegram_photo(image_path, caption=""): #사진 전송 함수, no caption
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
-    with open(image_path, "rb") as photo: #보낼 이미지 경로(image_path)
-        files = {"photo": photo}
-        data = {
-            "chat_id": CHAT_ID, #보낼 사람
-            "caption": caption #사진 밑 설명글
-        }
-        requests.post(url, files=files, data=data)
+
+    try:
+
+        with open(image_path, "rb") as photo: #보낼 이미지 경로(image_path)
+            files = {"photo": photo}
+            data = {
+                "chat_id": CHAT_ID, #보낼 사람
+                "caption": caption #사진 밑 설명글
+            }
+
+            response = requests.post(url, files=files, data=data, timeout=20)
+            #서버 응답 20초까지 기다려봄
+
+            response.raise_for_status()
+
+        return True
+    
+    except(requests.RequestException,OSError)as e:
+        print("사진 전송 실패: ",e);
+        return False
+    
 
 
 #YOLO 함수
@@ -78,9 +100,7 @@ while True: #실시간으로 카메라 확인
 
     results = model(frame, conf=CONF_THRES) #현재 카메라 화면을 모델에 넣어 탐지
 
-    detected = False #객체 탐지 여부 저장
-    detected_names = [] #탐지된 객체 이름과 확률 저장
-    detected_classes = [] #탐지된 클래스 이름만 저장
+    best_detections = {} #바운딩 박스가 여러개일 경우 가장 높은 신뢰도만 저장
 
     for result in results:
         for box in result.boxes: #바운딩 박스 하나씩 확인
@@ -88,26 +108,57 @@ while True: #실시간으로 카메라 확인
             conf = float(box.conf[0]) #확률 가져옴
             class_name = model.names[cls_id] #번호와 실제 이름 매핑
 
-            if class_name in TARGET_CLASSES: 
-                required_conf = CLASS_CONF.get(class_name, 0.25) #각 클래스에 필요한 최소 확률 가져옴
+            if class_name not in TARGET_CLASSES: 
+                continue
+            
+            required_conf = CLASS_CONF.get(class_name, 0.25) #각 클래스에 필요한 최소 확률 가져옴
 
-                if conf >= required_conf: #최소 확률 이상이면
-                    detected = True #감지
-                    detected_classes.append(class_name) #감지된 클래스 이름 저장
-                    detected_names.append(f"{class_name} {conf:.2f}") #보낼 메세지 구성
+            if conf < required_conf: #최소 확률 이하면
+                continue
+            
+            x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+            #바운딩 박스 좌표
 
+            if(
+                class_name not in best_detections
+                or conf>best_detections[class_name]
+            ):
+                best_detections[class_name]={
+                    "conf": conf,
+                    "box" : (x1,y1,x2,y2)
+                }
+            #각 클래스 별로 가장 신뢰도 높은 박스만 기록
+
+    detected_classes = list(best_detections.keys())
+
+    detected_names = [
+        f"{class_name} {conf:.2f}"
+        for class_name, conf in best_detections.items()
+    ]
+
+    detected = len(best_detections) > 0
+                    
     #이미지에 바운딩 박스 표시
     annotated_frame = results[0].plot()
 
     now = time.time() #현재 시간 초단위로 가져오기
-    if detected and now - last_t > COOLDOWN: #마지막 알림 이후 10초가 지났는지 확인
-        last_t = now #마지막 알림 시간 갱신
-
+    if detected and now - last_t >= COOLDOWN: #마지막 알림 이후 10초가 지났는지 확인
+        message_sent=False
+        photo_sent=False
+        
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S") #파일 이름에 현재 시간 기록
         image_path = f"alert_{timestamp}.jpg" #저장할 이미지 파일 이름 만들기
 
-        cv2.imwrite(image_path, annotated_frame) #이미지 jpg로 저장
-
+        image_saved=cv2.imwrite(image_path, annotated_frame) #이미지 jpg로 저장
+        
+        if image_saved:
+            photo_sent = send_telegram_photo(
+                image_path,
+                caption="감지 이미지"
+            )
+        else:
+            print("이미지 저장 실패:", image_path)
+            
         if "fire" in detected_classes or "smoke" in detected_classes:
             text = "화재 의심 상황 감지!\n" + "\n".join(detected_names)
         elif "cigarette_butt" in detected_classes:
@@ -117,11 +168,24 @@ while True: #실시간으로 카메라 확인
 
             #각 상황에 맞게 메세지 만들기
 
-        send_telegram_message(text) #메세지 보내고
-        send_telegram_photo(image_path, caption="감지 이미지") #이미지 보내기
+        message_sent = send_telegram_message(text) #메세지 보내고
 
-        print("텔레그램 알림 전송 완료:", detected_names) #전송 이후 터미널에 로그출력
+        if message_sent or photo_sent:
+            last_t = now 
+            print("텔레그램 알림 전송 완료:", detected_names)
+        else:
+            print("텔레그램 알림 전송 실패")
+
+        if photo_sent:
+            try:
+                os.remove(image_path)
+                print("이미지 삭제 완료:", image_path)
+
+            except OSError as e:
+                print("이미지 삭제 실패:", e)
     
+
+        #계속 사진이 쌓이면 저장공간이 부족해지니 사진 전송 후 삭제하도록 
     ##cv2.imshow("YOLO Fire Detection", annotated_frame) #PC화면에 실시간 감지 화면 띄우기
 
     #if cv2.waitKey(1) & 0xFF == ord("q"): #q를 누르면 반복문 종료
