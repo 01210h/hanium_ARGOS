@@ -90,6 +90,10 @@ model = YOLO(MODEL_PATH, task="detect") #yolo 모델 불러오기
 
 cap = cv2.VideoCapture(gstreamer_pipeline(sensor_id=0), cv2.CAP_GSTREAMER) #카메라 열기
 
+if not cap.isOpened():
+    print("카메라를 열지 못했습니다.")
+    exit()
+    
 last_t= 0 #마지막으로 알림 보낸 시간 저장
 
 while True: #실시간으로 카메라 확인
