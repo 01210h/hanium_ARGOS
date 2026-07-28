@@ -1,6 +1,5 @@
 from ultralytics import YOLO
 import cv2
-import requests
 import time
 import os
 
@@ -41,48 +40,6 @@ def gstreamer_pipeline(
         f"video/x-raw, format=(string)BGR ! "
         f"appsink drop=1 sync=false"
     )
-
-#이하 : 텔레그램 함수
-
-def send_telegram_message(text): #메세지 보내는 함수
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    data = {
-        "chat_id": CHAT_ID, #받을 사람
-        "text": text #보낼 메세지 내용
-    }
-    try:
-        response = requests.post(url, data=data, timeout=10)
-        response.raise_for_status()
-        return True
-    except requests.RequestException as e:
-        print("텔레그램 전송 실패:", e)
-        return False
-
-
-def send_telegram_photo(image_path, caption=""): #사진 전송 함수, no caption
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
-
-    try:
-
-        with open(image_path, "rb") as photo: #보낼 이미지 경로(image_path)
-            files = {"photo": photo}
-            data = {
-                "chat_id": CHAT_ID, #보낼 사람
-                "caption": caption #사진 밑 설명글
-            }
-
-            response = requests.post(url, files=files, data=data, timeout=20)
-            #서버 응답 20초까지 기다려봄
-
-            response.raise_for_status()
-
-        return True
-    
-    except(requests.RequestException,OSError)as e:
-        print("사진 전송 실패: ",e);
-        return False
-    
-
 
 #YOLO 함수
 
